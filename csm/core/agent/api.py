@@ -25,6 +25,7 @@ from asyncio import CancelledError as AsyncioCancelledError
 from weakref import WeakSet
 from aiohttp import web, web_exceptions
 from abc import ABC
+from ipaddress import ip_address
 from secure import SecureHeaders
 from csm.core.providers.provider_factory import ProviderFactory
 from csm.core.providers.providers import Request, Response
@@ -143,17 +144,28 @@ class CsmRestApi(CsmApi, ABC):
     @staticmethod
     def http_request_to_log_string(request):
         remote_ip = request.remote
-        url = request.path
+        forwarded_for_ip = str(request.headers.get('X-Forwarded-For')).split(',', 2)[0].strip()
+        try:
+            ip_address(forwarded_for_ip)
+        except ValueError:
+            forwarded_for_ip = None
+        path = request.path
         method = request.method
         user_agent = request.headers.get('User-Agent')
-        return (f"Remote_IP:{remote_ip} Url:{url} Method:{method} User-Agent:{user_agent}")
+        return (
+            f'Remote-IP:{remote_ip} '
+            f'Forwarded-For-IP:{forwarded_for_ip} '
+            f'Path:{path} '
+            f'Method:{method} '
+            f'User-Agent:{user_agent}'
+        )
 
     @staticmethod
     def process_audit_log(resp, request, status):
         url = request.path
         if (not request.app[const.USL_POLLING_LOG]
                 and url.startswith('/usl/')
-                and url != "/usl/v1/registerDevice"):
+                and not url.endswith('/registerDevice')):
             return
         audit = CsmRestApi.http_request_to_log_string(request)
         if (getattr(request, "session", None) is not None

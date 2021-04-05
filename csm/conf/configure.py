@@ -20,7 +20,6 @@ from cortx.utils.conf_store.conf_store import Conf
 from cortx.utils.kv_store.error import KvError
 from csm.conf.setup import Setup, CsmSetupError
 from csm.core.blogic import const
-from csm.conf.uds import UDSConfigGenerator
 from csm.core.providers.providers import Response
 from csm.common.errors import CSM_OPERATION_SUCESSFUL
 
@@ -54,10 +53,6 @@ class Configure(Setup):
         self._set_deployment_mode()
         try:
             if not self._is_env_vm:
-                uds_public_ip = command.options.get('uds_public_ip')
-                if uds_public_ip is not None:
-                    ip_address(uds_public_ip)
-                UDSConfigGenerator.apply(uds_public_ip=uds_public_ip)
                 Configure._set_healthmap_path()
             Configure._set_node_id()
             machine_id = Setup._get_machine_id()
@@ -95,7 +90,7 @@ class Configure(Setup):
                      const.DEV)
         self.store_encrypted_password()
         Conf.save(const.CSM_GLOBAL_INDEX)
-        Setup._run_cmd(f"cp -rn {const.CSM_SOURCE_CONF_PATH} {const.ETC_PATH}")
+        Setup._run_cmd(f"cp -rf {const.CSM_SOURCE_CONF_PATH} {const.ETC_PATH}")
 
     def store_encrypted_password(self):
         """
@@ -158,7 +153,7 @@ class Configure(Setup):
             Conf.set(const.CORTXCLI_GLOBAL_INDEX,
                      f"{const.DEPLOYMENT}>{const.MODE}", const.DEV)
         Setup._run_cmd(
-            f"cp -rn {const.CORTXCLI_SOURCE_CONF_PATH} {const.ETC_PATH}")
+            f"cp -rf {const.CORTXCLI_SOURCE_CONF_PATH} {const.ETC_PATH}")
 
     @staticmethod
     def _set_node_id():

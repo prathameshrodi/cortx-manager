@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 # CORTX-CSM: CORTX Management web and CLI interface.
 # Copyright (c) 2020 Seagate Technology LLC and/or its Affiliates
 # This program is free software: you can redistribute it and/or modify
@@ -70,6 +72,14 @@ class CsmAgent:
         for f in cached_files:
             os.remove(f)
 
+        #Initializing MessageBus
+        message_bus = None
+        try:
+            #MessageBus needs to be initialized once
+            message_bus = MessageBus()
+        except MessageBusError as ex:
+            Log.error(f"Error occured while initializing MessageBus. {ex}")
+
         # Alert configuration
         alerts_repository = AlertRepository(db)
         alerts_service = AlertsAppService(alerts_repository)
@@ -86,7 +96,7 @@ class CsmAgent:
         #Heath configuration
         health_repository = HealthRepository()
         health_plugin = import_plugin_module(const.HEALTH_PLUGIN)
-        health_plugin_obj = health_plugin.HealthPlugin()
+        health_plugin_obj = health_plugin.HealthPlugin(message_bus)
         health_service = HealthAppService(health_repository, alerts_repository, \
             health_plugin_obj)
         CsmAgent.health_monitor = HealthMonitorService(\
@@ -96,7 +106,7 @@ class CsmAgent:
         http_notifications = AlertHttpNotifyService()
         pm = import_plugin_module(const.ALERT_PLUGIN)
         CsmAgent.alert_monitor = AlertMonitorService(alerts_repository,\
-                pm.AlertPlugin(), CsmAgent.health_monitor.health_plugin, \
+                pm.AlertPlugin(message_bus), CsmAgent.health_monitor.health_plugin, \
                 http_notifications)
         email_queue = EmailSenderQueue()
         email_queue.start_worker_sync()
@@ -159,7 +169,7 @@ class CsmAgent:
         CsmRestApi._app[const.S3_ACCOUNT_SERVICE] = S3AccountService(s3)
         CsmRestApi._app[const.S3_BUCKET_SERVICE] = S3BucketService(s3)
         CsmRestApi._app[const.S3_ACCESS_KEYS_SERVICE] = S3AccessKeysService(s3)
-        CsmRestApi._app[const.S3_SERVER_INFO_SERVICE] = S3ServerInfoService(provisioner)
+        CsmRestApi._app[const.S3_SERVER_INFO_SERVICE] = S3ServerInfoService()
 
         user_service = CsmUserService(provisioner, user_manager)
         CsmRestApi._app[const.CSM_USER_SERVICE] = user_service
@@ -232,6 +242,7 @@ class CsmAgent:
 
 if __name__ == '__main__':
     sys.path.append(os.path.join(os.path.dirname(pathlib.Path(__file__)), '..', '..', '..'))
+    sys.path.append(os.path.join(os.path.dirname(pathlib.Path(os.path.realpath(__file__))), '..', '..'))
     from cortx.utils.log import Log
     from csm.common.runtime import Options
     Options.parse(sys.argv)
@@ -279,6 +290,8 @@ if __name__ == '__main__':
     from csm.core.services.version import ProductVersionService
     from csm.core.services.appliance_info import ApplianceInfoService
     from csm.core.services.system_status import SystemStatusService
+    from cortx.utils.message_bus import MessageBus
+    from cortx.utils.message_bus.error import MessageBusError
     try:
         # try:
         #     from salt import client
