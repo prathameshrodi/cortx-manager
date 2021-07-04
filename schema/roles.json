@@ -1,7 +1,15 @@
 {
     "admin": {
         "permissions": {
+            "permissions": ["list"],
+            "alerts": ["list", "update", "delete"],
             "maintenance": ["list", "update"],
+            "stats": ["list"],
+            "capacity": ["list"],
+            "sysconfig": ["list", "update", "delete"],
+            "users": ["create", "list", "update", "delete"],
+            "s3accounts": ["create", "list", "update", "delete"],
+            "auditlog": ["list", "read"],
             "system": ["list", "update"],
             "notification": ["update"],
             "security": ["read", "update"],
@@ -18,10 +26,11 @@
             "capacity": ["list"],
             "sysconfig": ["list", "update", "delete"],
             "users": ["list", "update", "delete", "create"],
-            "s3accounts": ["list", "create", "update"],
+            "s3accounts": ["list", "create", "update", "delete"],
             "auditlog": ["list", "read"],
             "replace_node": ["list"],
-            "health": ["list"]
+            "health": ["list"],
+            "security": ["read"]
 
         }
     },
@@ -36,7 +45,8 @@
             "s3accounts": ["list"],
             "auditlog": ["list", "read"],
             "replace_node": ["list"],
-            "health": ["list"]
+            "health": ["list"],
+            "security": ["read"]
         }
     },
     "s3": {

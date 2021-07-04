@@ -20,6 +20,7 @@ import asyncio
 import json
 import traceback
 import ssl
+import time
 from concurrent.futures import CancelledError as ConcurrentCancelledError
 from asyncio import CancelledError as AsyncioCancelledError
 from weakref import WeakSet
@@ -27,8 +28,11 @@ from aiohttp import web, web_exceptions
 from abc import ABC
 from ipaddress import ip_address
 from secure import SecureHeaders
+from typing import Dict, Tuple
+from csm.core.blogic.models.audit_log import CsmAuditLogModel
 from csm.core.providers.provider_factory import ProviderFactory
 from csm.core.providers.providers import Request, Response
+from csm.core.services.sessions import LoginService
 from csm.common.observer import Observable
 from csm.common.payload import *
 from cortx.utils.conf_store.conf_store import Conf
@@ -48,6 +52,8 @@ from csm.core.services.usl import UslService
 from csm.core.services.file_transfer import DownloadFileEntity
 from csm.core.controllers.view import CsmView, CsmResponse, CsmAuth
 from csm.core.controllers import CsmRoutes
+from cortx.utils.data.access import Query
+from cortx.utils.data.db.db_provider import (DataBaseProvider, GeneralConfig)
 import re
 
 
@@ -95,6 +101,8 @@ class CsmApi(ABC):
 class CsmRestApi(CsmApi, ABC):
     """ REST Interface to communicate with CSM """
 
+    __unsupported_features = None
+
     @staticmethod
     def init(alerts_service):
         CsmApi.init()
@@ -115,34 +123,18 @@ class CsmRestApi(CsmApi, ABC):
 
         CsmRestApi._app.on_startup.append(CsmRestApi._on_startup)
         CsmRestApi._app.on_shutdown.append(CsmRestApi._on_shutdown)
-        CsmRestApi.update_roles_permission()
-
-    @staticmethod
-    def update_roles_permission():
-        # Remove lyve_pilot permission if it is not supported
-        try:
-            roles = Json(const.ROLES_MANAGEMENT).load()
-            unsupported_feature_instance = unsupported_features.UnsupportedFeaturesDB()
-            feature_supported = CsmRestApi._app._loop.run_until_complete(
-                unsupported_feature_instance.is_feature_supported(
-                    const.CSM_COMPONENT_NAME, const.LYVE_PILOT))
-
-            if not feature_supported:
-                Log.debug(f"{const.LYVE_PILOT} is not supported.")
-                for permissions in roles.values():
-                    if permissions.get(const.PERMISSIONS).get(const.LYVE_PILOT):
-                        del permissions.get(const.PERMISSIONS)[const.LYVE_PILOT]
-                        Log.debug(f"{const.LYVE_PILOT} permissions removed.")
-                Json(const.ROLES_MANAGEMENT).dump(roles)
-        except Exception as e_:
-            Log.error(f"Error occurred while updating permissions: {e_}")
 
     @staticmethod
     def is_debug(request) -> bool:
         return 'debug' in request.rel_url.query
 
     @staticmethod
-    def http_request_to_log_string(request):
+    def generate_audit_log_string(request, **kwargs):
+        if (getattr(request, "session", None) is not None
+                and getattr(request.session, "credentials", None) is not None):
+            user = request.session.credentials.user_id
+        else:
+            user = None
         remote_ip = request.remote
         forwarded_for_ip = str(request.headers.get('X-Forwarded-For')).split(',', 2)[0].strip()
         try:
@@ -152,36 +144,36 @@ class CsmRestApi(CsmApi, ABC):
         path = request.path
         method = request.method
         user_agent = request.headers.get('User-Agent')
-        return (
-            f'Remote-IP:{remote_ip} '
-            f'Forwarded-For-IP:{forwarded_for_ip} '
-            f'Path:{path} '
-            f'Method:{method} '
-            f'User-Agent:{user_agent}'
-        )
+        entry = {
+            'user': user if user else "",
+            'remote_ip': remote_ip,
+            'forwarded_for_ip': forwarded_for_ip if forwarded_for_ip else "",
+            'method': method,
+            'path': path,
+            'user_agent': user_agent,
+            'response_code': kwargs.get("response_code", ""),
+            'request_id': kwargs.get("request_id", int(time.time()))
+        }
+        return json.dumps(entry)
 
     @staticmethod
-    def process_audit_log(resp, request, status):
+    def process_audit_log(request, **kwargs):
         url = request.path
         if (not request.app[const.USL_POLLING_LOG]
                 and url.startswith('/usl/')
                 and not url.endswith('/registerDevice')):
             return
-        audit = CsmRestApi.http_request_to_log_string(request)
-        if (getattr(request, "session", None) is not None
-                and getattr(request.session, "credentials", None) is not None):
-            Log.audit(f'User: {request.session.credentials.user_id} '
-                      f'{audit} RC: {status}')
-        else:
-            Log.audit(f'{audit} RC: {status}')
+        entry = CsmRestApi.generate_audit_log_string(request, **kwargs)
+        Log.audit(f'{entry}')
 
     @staticmethod
-    def error_response(err: Exception, request) -> dict:
+    def error_response(err: Exception, **kwargs) -> dict:
         resp = {
             "error_code": None,
             "message": None,
         }
 
+        request = kwargs.get("request")
         if CsmRestApi.is_debug(request):
             resp["stacktrace"] = traceback.format_exc().splitlines()
 
@@ -200,7 +192,8 @@ class CsmRestApi(CsmApi, ABC):
         else:
             resp["message"] = f'{str(err)}'
 
-        CsmRestApi.process_audit_log(resp, request, resp['error_code'])
+        CsmRestApi.process_audit_log(request, response_code=resp['error_code'], \
+                request_id = kwargs.get("request_id", int(time.time())))
         return resp
 
     @staticmethod
@@ -213,8 +206,8 @@ class CsmRestApi(CsmApi, ABC):
         return web.json_response(
             resp_obj, status=status, dumps=CsmRestApi.json_serializer)
 
-    @classmethod
-    def _unauthorised(cls, reason):
+    @staticmethod
+    def _unauthorised(reason: str):
         Log.debug(f'Unautorized: {reason}')
         raise web.HTTPUnauthorized(headers=CsmAuth.UNAUTH)
 
@@ -223,18 +216,36 @@ class CsmRestApi(CsmApi, ABC):
         match_info = await request.app.router.resolve(request)
         return match_info.handler
 
-    @classmethod
-    async def _is_public(cls, request):
-        handler = await cls._resolve_handler(request)
+    @staticmethod
+    async def _is_public(request):
+        handler = await CsmRestApi._resolve_handler(request)
         return CsmView.is_public(handler, request.method)
 
     @classmethod
     async def _get_permissions(cls, request):
-        handler = await cls._resolve_handler(request)
+        handler = await CsmRestApi._resolve_handler(request)
         return CsmView.get_permissions(handler, request.method)
 
-    @staticmethod
-    async def check_for_unsupported_endpoint(request):
+    @classmethod
+    async def get_unsupported_features(cls):
+        if cls.__unsupported_features is None:
+            db = unsupported_features.UnsupportedFeaturesDB()
+            cls.__unsupported_features = await db.get_unsupported_features()
+        return cls.__unsupported_features
+
+    @classmethod
+    async def is_feature_supported(cls, component, feature):
+        unsupported_features = await cls.get_unsupported_features()
+        for entry in unsupported_features:
+            if (
+                component == entry[const.COMPONENT_NAME] and
+                feature == entry[const.FEATURE_NAME]
+            ):
+                return False
+        return True
+
+    @classmethod
+    async def check_for_unsupported_endpoint(cls, request):
         """
         Check whether the endpoint is supported. If not, send proper error
         reponse.
@@ -248,43 +259,72 @@ class CsmRestApi(CsmApi, ABC):
         feature_endpoint_map = Json(const.FEATURE_ENDPOINT_MAPPING_SCHEMA).load()
         endpoint = getMatchingEndpoint(feature_endpoint_map, request.path)
         if endpoint:
-            unsupported_feature_instance = unsupported_features.UnsupportedFeaturesDB()
             if endpoint[const.DEPENDENT_ON]:
                 for component in endpoint[const.DEPENDENT_ON]:
-                    if not await unsupported_feature_instance.is_feature_supported(component,endpoint[const.FEATURE_NAME]):
+                    if not await cls.is_feature_supported(component, endpoint[const.FEATURE_NAME]):
                         Log.debug(f"The request {request.path} of feature {endpoint[const.FEATURE_NAME]} is not supported by {component}")
                         raise InvalidRequest("This feature is not supported on this environment.")
-            if not await unsupported_feature_instance.is_feature_supported(const.CSM_COMPONENT_NAME, endpoint[const.FEATURE_NAME]):
+            if not await cls.is_feature_supported(const.CSM_COMPONENT_NAME, endpoint[const.FEATURE_NAME]):
                 Log.debug(f"The request {request.path} of feature {endpoint[const.FEATURE_NAME]} is not supported by {const.CSM_COMPONENT_NAME}")
                 raise InvalidRequest("This feature is not supported on this environment.")
         else:
             Log.debug(f"Feature endpoint is not found for {request.path}")
 
-    @classmethod
+    @staticmethod
+    def _extract_bearer(headers: Dict) -> Tuple[str, str]:
+        """
+        Extract the bearer token from HTTP headers.
+
+        :param headers: HTTP headers.
+        :returns: bearer token.
+        """
+
+        hdr = headers.get(CsmAuth.HDR)
+        if not hdr:
+            raise CsmNotFoundError(f'No {CsmAuth.HDR} header')
+        auth_pair = hdr.split(' ')
+        if len(auth_pair) != 2:
+            raise CsmNotFoundError(f'The header is incorrect. Expected "{CsmAuth.HDR} session_id"')
+        auth_type, session_id = auth_pair
+        if auth_type != CsmAuth.TYPE:
+            raise CsmNotFoundError(f'Invalid auth type {auth_type}')
+        return session_id
+
+    @staticmethod
+    async def _validate_bearer(login_service: LoginService, session_id: str):
+        """
+        Validate the bearer token.
+
+        Search for the session with ID equal to the token value and return it.
+        Throw a Permission denied exception otherwise.
+        :param login_service: login service.
+        :param auth_type: authorization token type.
+        :param session_id: bearer token's value.
+        :returns: session object.
+        """
+
+        try:
+            session = await login_service.auth_session(session_id)
+        except CsmError as e:
+            raise CsmNotFoundError(e.error())
+        if not session:
+            raise CsmNotFoundError('Invalid auth token')
+        Log.info(f'Username: {session.credentials.user_id}')
+        return session
+
+    @staticmethod
     @web.middleware
-    async def session_middleware(cls, request, handler):
+    async def session_middleware(request, handler):
         session = None
-        is_public = await cls._is_public(request)
-        if not is_public:
-            hdr = request.headers.get(CsmAuth.HDR)
-            if not hdr:
-                cls._unauthorised(f'No {CsmAuth.HDR} header')
-            auth_pair = hdr.split(' ')
-            if len(auth_pair) != 2:
-                cls._unauthorised(f'The header is incorrect. Expected "{CsmAuth.HDR} session_id"')
-            auth_type, session_id = auth_pair
-            if auth_type != CsmAuth.TYPE:
-                cls._unauthorised(f'Invalid auth type {auth_type}')
-            Log.debug(f'Non-Public: {request}')
-            try:
-                session = await request.app.login_service.auth_session(session_id)
-                Log.info(f'Username: {session.credentials.user_id}')
-            except CsmError as e:
-                cls._unauthorised(e.error())
-            if not session:
-                cls._unauthorised('Invalid auth token')
-        else:
-            Log.debug(f'Public: {request}')
+        is_public = await CsmRestApi._is_public(request)
+        Log.debug(f'{"Public" if is_public else "Non-public"}: {request}')
+        try:
+            session_id = CsmRestApi._extract_bearer(request.headers)
+            session = await CsmRestApi._validate_bearer(request.app.login_service, session_id)
+            Log.info(f'Username: {session.credentials.user_id}')
+        except CsmNotFoundError as e:
+            if not is_public:
+                CsmRestApi._unauthorised(e.error())
         request.session = session
         return await handler(request)
 
@@ -309,11 +349,47 @@ class CsmRestApi(CsmApi, ABC):
         SecureHeaders(csp=True).aiohttp(resp)
         return resp
 
+    # The following workaround is required to ensure the ElasticSearch mappings for
+    # `CsmAuditLogModel` will be in place before any audit log entries are generated.  The query
+    # will force the correct mappings to be created on ElasticSearch according to the corresponding
+    # CSM model if they are not yet in place.  This is required because new audit log entries are
+    # added to ElasticSearch by rsyslog and, in case mappings are not present, rsyslog will create
+    # new ones itself.  The newly created mappings will differ from the ones expected by our
+    # business logic, and we will fail to read data from ElasticSearch.  The operation should be
+    # executed only once for performance purposes.
+
+    # Simple flag to keep track of its initialization amidst the sea of static methods in this
+    # module.
+
+    class AuditLogDbInitialized:
+        status = False
+
+    # This function should be invoked before `Log.audit()`.  The call will be placed inside
+    # `rest_middleware()` because it's the closest async parent call to `Log.audit()`.  We load the
+    # database schema from the YAML file again to avoid having to inject the database provider
+    # through the class constructor.  It is a workaround after all.
+
+    @staticmethod
+    async def _initialize_audit_log_db():
+        if CsmRestApi.AuditLogDbInitialized.status:
+            return
+        db_config = Yaml(const.DATABASE_CONF).load()
+        db_config['databases']["es_db"]["config"][const.PORT] = int(
+            db_config['databases']["es_db"]["config"][const.PORT])
+        db_config['databases']["es_db"]["config"]["replication"] = int(
+            db_config['databases']["es_db"]["config"]["replication"])
+        conf = GeneralConfig(db_config)
+        db = DataBaseProvider(conf)
+        await db(CsmAuditLogModel).get(Query().limit(0))
+        CsmRestApi.AuditLogDbInitialized.status = True
+
+
     @staticmethod
     @web.middleware
     async def rest_middleware(request, handler):
-
         try:
+            request_id = int(time.time())
+            #await CsmRestApi._initialize_audit_log_db()
             await CsmRestApi.check_for_unsupported_endpoint(request)
 
             resp = await handler(request)
@@ -323,7 +399,7 @@ class CsmRestApi(CsmApi, ABC):
                 return file_resp
 
             if isinstance(resp, web.StreamResponse):
-                Log.audit(f'{CsmRestApi.http_request_to_log_string(request)} RC: {resp.status}')
+                CsmRestApi.process_audit_log(request, response_code = resp.status, request_id = request_id)
                 return resp
 
             status = 200
@@ -334,7 +410,7 @@ class CsmRestApi(CsmApi, ABC):
                     Log.error(f"Error: ({status}):{resp_obj['message']}")
             else:
                 resp_obj = resp
-            CsmRestApi.process_audit_log(resp, request, status)
+            CsmRestApi.process_audit_log(request, response_code = status, request_id = request_id)
             return CsmRestApi.json_response(resp_obj, status)
         # todo: Changes for handling all Errors to be done.
 
@@ -348,31 +424,31 @@ class CsmRestApi(CsmApi, ABC):
             raise e
         except InvalidRequest as e:
             Log.error(f"Error: {e} \n {traceback.format_exc()}")
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request), status=400)
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id), status=400)
         except CsmNotFoundError as e:
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request), status=404)
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id), status=404)
         except CsmPermissionDenied as e:
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request), status=403)
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id), status=403)
         except ResourceExist  as e:
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request),
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id),
                                             status=const.STATUS_CONFLICT)
         except CsmInternalError as e:
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request), status=500)
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id), status=500)
         except CsmNotImplemented as e:
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request), status=501)
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id), status=501)
         except CsmGatewayTimeout as e:
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request), status=504)
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id), status=504)
         except CsmServiceConflict as e:
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request), status=409)
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id), status=409)
         except (CsmError, InvalidRequest) as e:
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request), status=400)
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id), status=400)
         except KeyError as e:
             Log.error(f"Error: {e} \n {traceback.format_exc()}")
             message = f"Missing Key for {e}"
-            return CsmRestApi.json_response(CsmRestApi.error_response(KeyError(message), request), status=422)
+            return CsmRestApi.json_response(CsmRestApi.error_response(KeyError(message), request = request, request_id = request_id), status=422)
         except Exception as e:
             Log.critical(f"Unhandled Exception Caught: {e} \n {traceback.format_exc()}")
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request), status=500)
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id), status=500)
 
     @staticmethod
     def run(port: int, https_conf: ConfSection, debug_conf: DebugConf):

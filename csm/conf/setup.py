@@ -21,13 +21,15 @@ import grp
 import errno
 import shlex
 import json
+import aiohttp
+from aiohttp.client_exceptions import ClientConnectionError
 from cortx.utils.log import Log
 from csm.common.payload import Yaml
 from csm.core.blogic import const
 from csm.common.process import SimpleProcess
 from csm.common.errors import CsmSetupError, InvalidRequest
-from csm.core.blogic.csm_ha import CsmResourceAgent
-from csm.common.ha_framework import PcsHAFramework
+# from csm.core.blogic.csm_ha import CsmResourceAgent
+# from csm.common.ha_framework import PcsHAFramework
 from csm.common.cluster import Cluster
 from csm.core.agent.api import CsmApi
 import traceback
@@ -35,7 +37,7 @@ from csm.common.payload import Text
 from cortx.utils.security.cipher import Cipher, CipherInvalidToken
 from cortx.utils.conf_store.conf_store import Conf
 from cortx.utils.kv_store.error import KvError
-
+from cortx.utils.validator.v_confkeys import ConfKeysV
 # try:
 #     from salt import client
 # except ModuleNotFoundError:
@@ -57,6 +59,43 @@ class Setup:
         self._setup_info = dict()
         self._is_env_vm = False
         self._is_env_dev = False
+        const.SERVER_NODE_INFO = f"{const.SERVER_NODE}>{Setup._get_machine_id()}"
+        self.conf_store_keys = {}
+
+    @staticmethod
+    def _copy_skeleton_configs():
+        os.makedirs(const.CSM_CONF_PATH, exist_ok=True)
+        Setup._run_cmd(f"cp -rn {const.CSM_SOURCE_CONF_PATH} {const.ETC_PATH}")
+
+    @staticmethod
+    async def request(url, method, json=None):
+        """
+        Call DB for Executing the Given API.
+        :param url: URI for Connection.
+        :param method: API Method.
+        :return: Response Object.
+        """
+        if not json:
+            json = dict()
+        try:
+            async with aiohttp.ClientSession(headers={}) as session:
+                async with session.request(method=method.lower(), url=url,
+                                           json=json) as response:
+                    return await response.text(), response.headers, response.status
+        except ClientConnectionError as e:
+            Log.error(f"Connection to URI {url} Failed: {e}")
+        except Exception as e:
+            Log.error(f"Connection to Db Failed. {traceback.format_exc()}")
+            raise CsmSetupError(f"Connection to Db Failed. {e}")
+
+    @staticmethod
+    def _validate_conf_store_keys(index, keylist=None):
+        if not keylist:
+            raise CsmSetupError("Keylist should not be empty")
+        if not isinstance(keylist, list):
+            raise CsmSetupError("Keylist should be kind of list")
+        Log.info(f"Validating confstore keys: {keylist}")
+        ConfKeysV().validate("exists", index, keylist)
 
     def _set_deployment_mode(self):
         """
@@ -65,11 +104,11 @@ class Setup:
         """
         self._get_setup_info()
         self._set_service_user()
-        if self._setup_info[const.NODE_TYPE] == const.VM:
+        if self._setup_info[const.NODE_TYPE] in [const.VM, const.VIRTUAL]:
             Log.info("Running Csm Setup for VM Environment Mode.")
             self._is_env_vm = True
 
-        if Conf.get(const.CONSUMER_INDEX,  f"{const.DEPLOYMENT}>{const.MODE}") == const.DEV:
+        if Conf.get(const.CONSUMER_INDEX, const.KEY_DEPLOYMENT_MODE) == const.DEV:
             Log.info("Running Csm Setup for Dev Mode.")
             self._is_env_dev = True
 
@@ -78,7 +117,7 @@ class Setup:
         This Method will set the username for service user to Self._user
         :return:
         """
-        self._user = Conf.get(const.CONSUMER_INDEX, const.CONF_STORE_USER_KEY)
+        self._user = Conf.get(const.CONSUMER_INDEX, self.conf_store_keys[const.KEY_CSM_USER])
 
     @staticmethod
     def _run_cmd(cmd):
@@ -107,19 +146,14 @@ class Setup:
         csm_user_pass = None
         if self._is_env_dev:
             decrypt = False
-        Log.info("Fetching CSM User Password from Config Store.")
-        try:
-            # TODO: Need to Change Method for Fetching Csm Credentials.
-            csm_user_pass = Conf.get(const.CONSUMER_INDEX,
-                                     const.CONF_STORE_PASS_KEY)
-        except KvError as e:
-            Log.error(f"Failed to Fetch Csm Secret {e}")
+        Log.info("Fetching CSM User Password from Conf Store.")
+        csm_user_pass = Conf.get(const.CONSUMER_INDEX, self.conf_store_keys[const.KEY_CSM_SECRET])
         if decrypt and csm_user_pass:
             Log.info("Decrypting CSM Password.")
             try:
-                cluster_id = Conf.get(const.CONSUMER_INDEX,
-                                      f"{const.CLUSTER}>{const.CLUSTER_ID}")
-                cipher_key = Cipher.generate_key(cluster_id, "system")
+                cluster_id = Conf.get(const.CONSUMER_INDEX, self.conf_store_keys[const.KEY_CLUSTER_ID])
+                cipher_key = Cipher.generate_key(cluster_id,
+                            Conf.get(const.CSM_GLOBAL_INDEX, "CSM>password_decryption_key"))
             except KvError as error:
                 Log.error(f"Failed to Fetch Cluster Id. {error}")
                 return None
@@ -152,18 +186,12 @@ class Setup:
         Return Setup Info from Conf Store
         :return:
         """
-        self._setup_info = {"node_type": "",
-                            "storage_type": ""}
-        server_nodes = Conf.get(const.CONSUMER_INDEX, "cluster>server_nodes")
-        machine_id = Setup._get_machine_id()
-        node_type_key = (f"{const.CLUSTER}>{server_nodes.get(machine_id, '')}"
-                         f">{const.NODE_TYPE}")
-        self._setup_info[const.NODE_TYPE] = Conf.get(const.CONSUMER_INDEX,
-                                               node_type_key)
-        storage_type_key = (f"{const.STORAGE}>{server_nodes.get(machine_id, '')}"
-                         f">{const.TYPE}")
-        self._setup_info[const.STORAGE_TYPE] = Conf.get(const.CONSUMER_INDEX,
-                                                  storage_type_key)
+        self._setup_info = {const.NODE_TYPE: "", const.STORAGE_TYPE: ""}
+        self._setup_info[const.NODE_TYPE] = Conf.get(const.CONSUMER_INDEX, self.conf_store_keys[const.KEY_SERVER_NODE_TYPE])
+        enclosure_id = Conf.get(const.CONSUMER_INDEX, self.conf_store_keys[const.KEY_ENCLOSURE_ID])
+        storage_type_key = f"{const.STORAGE_ENCL}>{enclosure_id}>{const.TYPE}"
+        self._validate_conf_store_keys(const.CONSUMER_INDEX, [storage_type_key])
+        self._setup_info[const.STORAGE_TYPE] = Conf.get(const.CONSUMER_INDEX, storage_type_key)
 
     @staticmethod
     def _get_machine_id():
@@ -285,20 +313,21 @@ class Setup:
             os.makedirs(const.CSM_CONF_PATH, exist_ok=True)
             Setup._run_cmd("cp -rf " +const.CSM_SOURCE_CONF_PATH+ " " +const.ETC_PATH)
 
-    def _config_cluster(self, args):
-        """
-        Instantiation of csm cluster with resources
-        Create csm user
-        """
-        Log.info("Instantiation of csm cluster with resources")
-        self._csm_resources = Conf.get(const.CSM_GLOBAL_INDEX, "HA>resources")
-        self._csm_ra = {
-            "csm_resource_agent": CsmResourceAgent(self._csm_resources)
-        }
-        self._ha_framework = PcsHAFramework(self._csm_ra)
-        self._cluster = Cluster(const.INVENTORY_FILE, self._ha_framework)
-        self._cluster.init(args['f'])
-        CsmApi.set_cluster(self._cluster)
+    # TODO: Need to remove unused code after proper testing.
+    # def _config_cluster(self, args):
+    #     """
+    #     Instantiation of csm cluster with resources
+    #     Create csm user
+    #     """
+    #     Log.info("Instantiation of csm cluster with resources")
+    #     self._csm_resources = Conf.get(const.CSM_GLOBAL_INDEX, "HA>resources")
+    #     self._csm_ra = {
+    #         "csm_resource_agent": CsmResourceAgent(self._csm_resources)
+    #     }
+    #     self._ha_framework = PcsHAFramework(self._csm_ra)
+    #     self._cluster = Cluster(const.INVENTORY_FILE, self._ha_framework)
+    #     self._cluster.init(args['f'])
+    #     CsmApi.set_cluster(self._cluster)
 
     def _log_cleanup(self):
         """
@@ -374,24 +403,23 @@ class Setup:
         if any(is_auto_restart_required):
             Log.debug("Updating All setup file for Auto Restart on "
                              "Failure")
-            Setup._update_service_file("#< RESTART_OPTION >",
+            Setup._update_csm_files("#< RESTART_OPTION >",
                                       "Restart=on-failure")
             Setup._run_cmd("systemctl daemon-reload")
 
     @staticmethod
-    def _update_service_file(key, value):
+    def _update_csm_files(key, value):
         """
-        Update CSM Agent and CSM Web service Files Depending on Job Type of
-        Setup.
+        Update CSM Files Depending on Job Type of Setup.
         """
-        Log.info(f"Update service file for {key}:{value}")
-        for each_service_file in const.CSM_SERVICE_FILES:
-            service_file_data = Text(each_service_file).load()
+        Log.info(f"Update file for {key}:{value}")
+        for each_file in const.CSM_FILES:
+            service_file_data = Text(each_file).load()
             if not service_file_data:
-                Log.warn(f"File {each_service_file} not updated.")
+                Log.warn(f"File {each_file} not updated.")
                 continue
             data = service_file_data.replace(key, value)
-            Text(each_service_file).dump(data)
+            Text(each_file).dump(data)
 
 # TODO: Devide changes in backend and frontend
 # TODO: Optimise use of args for like product, force, component

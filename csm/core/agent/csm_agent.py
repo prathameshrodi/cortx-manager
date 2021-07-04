@@ -72,42 +72,25 @@ class CsmAgent:
         for f in cached_files:
             os.remove(f)
 
-        #Initializing MessageBus
-        message_bus = None
-        try:
-            #MessageBus needs to be initialized once
-            message_bus = MessageBus()
-        except MessageBusError as ex:
-            Log.error(f"Error occured while initializing MessageBus. {ex}")
-
         # Alert configuration
         alerts_repository = AlertRepository(db)
         alerts_service = AlertsAppService(alerts_repository)
         CsmRestApi.init(alerts_service)
-
-        # settting usl polling
-        usl_polling_log = Conf.get(const.CSM_GLOBAL_INDEX, "Log>usl_polling_log")
-        CsmRestApi._app[const.USL_POLLING_LOG] = usl_polling_log
 
         # system status
         system_status_service = SystemStatusService()
         CsmRestApi._app[const.SYSTEM_STATUS_SERVICE] = system_status_service
 
         #Heath configuration
-        health_repository = HealthRepository()
         health_plugin = import_plugin_module(const.HEALTH_PLUGIN)
-        health_plugin_obj = health_plugin.HealthPlugin(message_bus)
-        health_service = HealthAppService(health_repository, alerts_repository, \
-            health_plugin_obj)
-        CsmAgent.health_monitor = HealthMonitorService(\
-                health_plugin_obj, health_service)
+        health_plugin_obj = health_plugin.HealthPlugin(CortxHAFramework())
+        health_service = HealthAppService(health_plugin_obj)
         CsmRestApi._app[const.HEALTH_SERVICE] = health_service
 
         http_notifications = AlertHttpNotifyService()
         pm = import_plugin_module(const.ALERT_PLUGIN)
         CsmAgent.alert_monitor = AlertMonitorService(alerts_repository,\
-                pm.AlertPlugin(message_bus), CsmAgent.health_monitor.health_plugin, \
-                http_notifications)
+                pm.AlertPlugin(), http_notifications)
         email_queue = EmailSenderQueue()
         email_queue.start_worker_sync()
 
@@ -187,8 +170,16 @@ class CsmAgent:
         CsmRestApi._app[const.PRODUCT_VERSION_SERVICE] = ProductVersionService(provisioner)
 
         CsmRestApi._app[const.APPLIANCE_INFO_SERVICE] = ApplianceInfoService()
+        CsmRestApi._app[const.UNSUPPORTED_FEATURES_SERVICE] = UnsupportedFeaturesService()
         # USL Service
-        CsmRestApi._app[const.USL_SERVICE] = UslService(s3, db, provisioner)
+        try:
+            Log.info("Load USL Configurations")
+            Conf.load(const.USL_GLOBAL_INDEX, f"yaml://{const.USL_CONF}")
+            usl_polling_log = Conf.get(const.USL_GLOBAL_INDEX, "Log>usl_polling_log")
+            CsmRestApi._app[const.USL_POLLING_LOG] = usl_polling_log
+            CsmRestApi._app[const.USL_SERVICE] = UslService(s3, db, provisioner)
+        except Exception as e:
+            Log.warn(f"USL configuration not loaded: {e}")
 
         # Plugin for Maintenance
         # TODO : Replace PcsHAFramework with hare utility
@@ -230,13 +221,11 @@ class CsmAgent:
 
         if not Options.debug:
             CsmAgent._daemonize()
-        CsmAgent.health_monitor.start()
         CsmAgent.alert_monitor.start()
         CsmRestApi.run(port, https_conf, debug_conf)
         Log.info("Started stopping csm agent")
         CsmAgent.alert_monitor.stop()
         Log.info("Finished stopping alert monitor service")
-        CsmAgent.health_monitor.stop()
         Log.info("Finished stopping csm agent")
 
 
@@ -254,8 +243,7 @@ if __name__ == '__main__':
     from csm.core.blogic import const
     from csm.core.services.alerts import AlertsAppService, AlertEmailNotifier, \
                                         AlertMonitorService, AlertRepository
-    from csm.core.services.health import HealthAppService, HealthRepository \
-            , HealthMonitorService
+    from csm.core.services.health import HealthAppService
     from csm.core.services.stats import StatsAppService
     from csm.core.services.s3.iam_users import IamUsersService
     from csm.core.services.s3.accounts import S3AccountService
@@ -289,9 +277,8 @@ if __name__ == '__main__':
     from cortx.utils.security.cipher import Cipher, CipherInvalidToken
     from csm.core.services.version import ProductVersionService
     from csm.core.services.appliance_info import ApplianceInfoService
+    from csm.core.services.unsupported_features import UnsupportedFeaturesService
     from csm.core.services.system_status import SystemStatusService
-    from cortx.utils.message_bus import MessageBus
-    from cortx.utils.message_bus.error import MessageBusError
     try:
         # try:
         #     from salt import client

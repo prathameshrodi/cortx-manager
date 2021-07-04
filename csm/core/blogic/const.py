@@ -33,6 +33,7 @@ CORTXCLI_CONF_FILE_NAME = 'cortxcli.conf'
 CORTXCLI_CONF_FILE_URL = (f'yaml://{CORTXCLI_SOURCE_CONF_PATH}/'
                           f'{CORTXCLI_CONF_FILE_NAME}')
 DB_CONF_FILE_NAME = 'database.yaml'
+DB_SOURCE_CONF_FILE_URL = f'yaml://{CSM_PATH}/conf/etc/csm/{DB_CONF_FILE_NAME}'
 PLUGIN_DIR = 'cortx'
 WEB_DEFAULT_PORT = 28100 # currently being used by USL only
 PROVISIONER_LOG_FILE_PATH = "/var/log/seagate"
@@ -113,10 +114,9 @@ INVENTORY_INDEX = 'INVENTORY'
 COMPONENTS_INDEX = 'COMPONENTS'
 DATABASE_INDEX = 'DATABASE'
 CONSUMER_INDEX = 'CONSUMER'
+TEST_INDEX = 'TEST'
 CORTXCLI_GLOBAL_INDEX = 'CORTXCLI'
-
-# AMQP Consumer Tag
-CONSUMER_TAG = 'AMQP_CONSUMER'
+USL_GLOBAL_INDEX = 'USL'
 
 # Cluster Inventory Related
 INVENTORY_FILE = '/etc/csm/cluster.conf'
@@ -128,18 +128,27 @@ TYPE_SSU = 'SSU'
 TYPE_S3_SERVER = 'S3_SERVER'
 
 # Config
+CORTX = 'cortx'
+TMP_CSM = '/tmp/csm'
 CSM_ETC_DIR = '/etc/csm'
+TMP_CSM = '/tmp/csm'
 CSM_CONF = '/etc/csm/csm.conf'
+USL_CONF = '/etc/csm/usl.conf'
 CORTXCLI_CONF = '/etc/cli/cortxcli.conf'
 CORTXCLI_SECTION = 'CORTXCLI'
 CSM_CLUSTER_CONF = '/etc/csm/cluster.conf'
 CSM_TMP_FILE_CACHE_DIR = '/tmp/csm/file_cache/transfer'
 COMPONENTS_CONF = '/etc/csm/components.yaml'
 DATABASE_CONF = '/etc/csm/database.yaml'
+DATABASE_CONF_URL = f"yaml://{DATABASE_CONF}"
 DATABASE_CLI_CONF = '/etc/cli/database_cli.yaml'
-CSM_AGENT_SERVICE_FILE_PATH = "/etc/systemd/system/csm_agent.service"
-CSM_WEB_SERVICE_FILE_PATH = "/etc/systemd/system/csm_web.service"
-CSM_SERVICE_FILES = [CSM_AGENT_SERVICE_FILE_PATH, CSM_WEB_SERVICE_FILE_PATH]
+CSM_AGENT_SERVICE = "csm_agent.service"
+CSM_AGENT_SERVICE_FILE_PATH = f"/etc/systemd/system/{CSM_AGENT_SERVICE}"
+CSM_WEB_SERVICE = "csm_web.service"
+CSM_WEB_SERVICE_FILE_PATH = f"/etc/systemd/system/{CSM_WEB_SERVICE}"
+CSM_WEB_ENV_FILE_PATH = f"{BASE_DIR}/csm/web/.env"
+CSM_WEB_DIST_ENV_FILE_PATH = f"{BASE_DIR}/csm/web/web-dist/.env"
+CSM_FILES = [CSM_AGENT_SERVICE_FILE_PATH, CSM_WEB_SERVICE_FILE_PATH]
 SUPPORT_BUNDLE_ROOT = 'SUPPORT_BUNDLE_ROOT'
 DEFAULT_SUPPORT_BUNDLE_ROOT = BASE_DIR + '/bundle'
 SSH_TIMEOUT = 'SSH_TIMEOUT'
@@ -150,14 +159,20 @@ DEFAULT_USER = 'admin'
 CSM_SUPER_USER_ROLE = 'admin'
 CSM_MANAGE_ROLE = 'manage'
 CSM_MONITOR_ROLE = 'monitor'
-CSM_USER_ROLES = [CSM_MANAGE_ROLE, CSM_MONITOR_ROLE]
+CSM_S3_ACCOUNT_ROLE = 's3'
+CSM_USER_ROLES = [CSM_SUPER_USER_ROLE, CSM_MANAGE_ROLE, CSM_MONITOR_ROLE]
 CSM_USER_INTERFACES = ['cli', 'web', 'api']
 CSM_CONF_URL = f"yaml://{CSM_CONF_PATH}/{CSM_CONF_FILE_NAME}"
+DATABASE_CONF_URL = f"yaml://{DATABASE_CONF}"
+CSM_MAX_USERS_ALLOWED = "CSM_USERS>max_users_allowed"
+
+# cron dir
+CRON_DIR = "/etc/cron.daily"
+SOURCE_CRON_PATH = "{0}/conf{1}/es_logrotate.cron".format(CSM_PATH, CRON_DIR)
+DEST_CRON_PATH = "{}/es_logrotate.cron".format(CRON_DIR)
 
 # Non root user
 NON_ROOT_USER = 'csm'
-CONF_STORE_USER_KEY = 'system>service-user>name'
-CONF_STORE_PASS_KEY = 'system>service-user>secret'
 NON_ROOT_USER_KEY = 'CSM>username'
 CSM = 'CSM'
 CSM_USER_HOME='/opt/seagate/cortx/csm/home/'
@@ -248,28 +263,13 @@ TOTAL = 'total'
 GOOD_HEALTH = 'good'
 HEALTH_SUMMARY = 'health_summary'
 RESOURCE_KEY = 'resource_key'
-IS_ACTUATOR = 'is_actuator'
-IS_NODE1 = 'is_node1'
-CHANNEL = 'CHANNEL'
-NODE1 = 'node1'
-NODE2 = 'node2'
 HOST = 'host'
-RMQ_HOSTS = 'hosts'
 PORT = 'port'
-VHOST = 'virtual_host'
 UNAME = 'username'
 PASS = 'password'
-EXCH_TYPE = 'exchange_type'
 RETRY_COUNT = 'retry_count'
 DURABLE = 'durable'
-EXCLUSIVE = 'exclusive'
 SLEEP_TIME = 'sleep_time'
-EXCH = 'exchange'
-EXCH_QUEUE = 'exchange_queue'
-ROUTING_KEY = 'routing_key'
-ACT_REQ_EXCH = 'actuator_req_exchange'
-ACT_REQ_EXCH_QUEUE = 'actuator_req_queue'
-ACT_REQ_ROUTING_KEY = 'actuator_req_routing_key'
 ENCLOSURE = 'enclosure'
 NODE = 'node'
 HEADER = 'sspl_ll_msg_header'
@@ -292,12 +292,32 @@ FETCH_TIME = 'fetch_time'
 HOST_ID = 'host_id'
 CREATED_TIME = 'created_time'
 FAULT_HEALTH = 'Fault'
+RESPONSE_FORMAT_TREE = 'tree'
+RESPONSE_FORMAT_TABLE = 'flattened'
+ARG_RESOURCE = 'resource'
+ARG_RESOURCE_ID = 'resource_id'
+ARG_DEPTH = 'depth'
+HEALTH_DEFAULT_DEPTH = 1
+ARG_RESPONSE_FORMAT = 'response_format'
+ARG_OFFSET = 'offset'
+HEALTH_DEFAULT_OFFSET = 1
+ARG_LIMIT = 'limit'
+HEALTH_DEFAULT_LIMIT = 0
+FETCH_RESOURCE_HEALTH_REQ = 'fetch_resource_health'
+FETCH_RESOURCE_HEALTH_BY_ID_REQ = 'fetch_resource_health_by_id'
+STATUS_LITERAL = 'status'
+OUTPUT_LITERAL = 'output'
+ERROR_LITERAL = 'error'
+STATUS_SUCCEEDED = 'Succeeded'
+STATUS_FAILED = 'Failed'
+STATUS_PARTIAL = 'Partial'
+HEALTH_FETCH_ERR_MSG = 'Error fetching health from ha.'
 
 # CSM Schema Path
 ALERT_MAPPING_TABLE = '{}/schema/alert_mapping_table.json'.format(CSM_PATH)
 HEALTH_MAPPING_TABLE = '{}/schema/csm_health_schema.json'.format(CSM_PATH)
 CSM_SETUP_FILE = '{}/schema/csm_setup.json'.format(CSM_PATH)
-CLI_SETUP_FILE = '{}/schema/cli_setup.json'.format(CSM_PATH)
+CLI_SETUP_FILE = '{}/cli_setup.json'.format(COMMAND_DIRECTORY)
 
 # Support Bundle
 SSH_USER_NAME = 'root'
@@ -372,6 +392,10 @@ S3_PARAM_USER_NAME = 'UserName'
 S3_PARAM_MARKER = 'Marker'
 S3_PARAM_MAX_ITEMS = 'MaxItems'
 S3_IAM_CMD_DELETE_ACCESS_KEY = 'DeleteAccessKey'
+USER_NAME = 'user_name'
+S3_ACCESS_KEYS = 'access_keys'
+S3_ACCESS_KEY_ID = 'access_key_id'
+ROOT = 'root'
 
 # S3/Boto3
 S3_DEFAULT_REGION = 'us-west2'
@@ -401,8 +425,8 @@ PASSWORD_SPECIAL_CHARACTER = ["!", "@", "#", "$", "%", "^", "&", "*", "(", ")",
 # CSM Users
 CSM_USER_NAME_MIN_LEN = 3
 CSM_USER_NAME_MAX_LEN = 64
-CSM_USER_SORTABLE_FIELDS = ['user_id', 'email', 'user_type', 'created_time',
-                            'updated_time']
+CSM_USER_SORTABLE_FIELDS = [
+    'user_id', 'username', 'email', 'user_type', 'role', 'created_time', 'updated_time']
 CSM_USER_DEFAULT_TIMEOUT = 0
 CSM_USER_DEFAULT_LANGUAGE = 'English'
 CSM_USER_DEFAULT_TEMPERATURE = 'celcius'
@@ -443,6 +467,7 @@ NTP_TIMEZONE_OFFSET = 'ntp_timezone_offset'
 # Audit Log
 AUDIT_LOG = "/tmp/auditlogs/"
 MAX_RESULT_WINDOW = 10000
+SORTABLE_FIELDS = "sortable_fields"
 
 # Syslog constants
 LOG_LEVEL = "INFO"
@@ -471,6 +496,13 @@ IS_DHCP = 'is_dhcp'
 ROAMING_IP = "roaming_ip"
 PRIVATE_IP = "private_ip"
 LOCALHOST = "localhost"
+NETWORK = "network"
+DATA = "data"
+PUBLIC_FQDN = "public_fqdn"
+PRIVATE_FQDN = "private_fqdn"
+MANAGEMENT = "management"
+VIRTUAL_HOST = "virtual_host"
+PUBLIC_DATA_DOMAIN_NAME = "node_public_data_domain_name"
 
 # Services
 SYSTEM_CONFIG_SERVICE = "system_config_service"
@@ -482,6 +514,7 @@ S3_BUCKET_SERVICE = "s3_bucket_service"
 S3_ACCESS_KEYS_SERVICE = 's3_access_keys_service'
 S3_SERVER_INFO_SERVICE = 's3_server_info_service'
 APPLIANCE_INFO_SERVICE = "appliance_info_service"
+UNSUPPORTED_FEATURES_SERVICE = "unsupported_features_service"
 SYSTEM_STATUS_SERVICE = "system_status_service"
 
 # System Status flight
@@ -529,6 +562,7 @@ ALERT_PLUGIN = "alert"
 HEALTH_PLUGIN = "health"
 S3_PLUGIN = "s3"
 PROVISIONER_PLUGIN = "provisioner"
+PLUGIN_REQUEST = "request"
 
 # REST METHODS
 POST = "POST"
@@ -553,11 +587,18 @@ USAGE_PERCENTAGE = 'usage_percentage'
 
 # Keys for  Description
 DECRYPTION_KEYS = {
-    "CHANNEL>password": "sspl",
-    "S3>ldap_password": "openldap",
-    "CSM>password": "system"
+    "S3>ldap_password": "S3>password_decryption_key",
+    "CSM>password": "CSM>password_decryption_key"
 }
 CLUSTER_ID_KEY = "PROVISIONER>cluster_id"
+SERVER_NODE = "server_node"
+ENCLOSURE_ID = "enclosure_id"
+SOFTWARE = "software"
+
+#Third party packages information
+python_pkgs_req_path = CSM_INSTALL_BASE_DIR + "/conf/requirment.txt"
+dependent_rpms = ["elasticsearch-oss-7.10", "consul-1.9", "opendistroforelasticsearch-kibana-1.12", "cortx-csm_web"]
+
 # Provisioner status
 PROVISIONER_CONFIG_TYPES = ['network', 'firmware', 'hotfix']
 
@@ -581,15 +622,15 @@ RET='ret'
 DEBUG='debug'
 NA='NA'
 GET_NODE_ID='get_node_id'
-GET_SETUP_INFO='cluster>{server-node}>node_type'
 NODE_TYPE="node_type"
+SGIAM = "sgiam"
 
 #Deployment Mode
 DEPLOYMENT = 'DEPLOYMENT'
 MODE = 'mode'
-DEPLOYMENT_MODE = f"{DEPLOYMENT}>{MODE}"
 DEV = 'dev'
 VM = 'VM'
+VIRTUAL = 'virtual'
 ENV_TYPE = 'env_type'
 
 # System config list
@@ -658,6 +699,7 @@ FEATURE_ENDPOINT_MAPPING_SCHEMA = '{}/schema/feature_endpoint_mapping.json'.form
 L18N_SCHEMA = '{}/schema/l18n.json'.format(CSM_PATH)
 DEPENDENT_ON = "dependent_on"
 CSM_COMPONENT_NAME = "csm"
+COMPONENT_NAME = "component_name"
 FEATURE_NAME = "feature_name"
 SETUP_TYPES = "setup_types"
 TYPE = 'type'
@@ -708,3 +750,26 @@ CONSUMER_ID_KEY = 'MESSAGEBUS>CONSUMER>ALERTS>consumer_id'
 CONSUMER_GROUP_KEY = 'MESSAGEBUS>CONSUMER>ALERTS>consumer_group'
 CONSUER_MSG_TYPES_KEY = 'MESSAGEBUS>CONSUMER>ALERTS>consumer_message_types'
 CONSUMER_OFFSET = 'MESSAGEBUS>CONSUMER>ALERTS>offset'
+
+#ConfStore Keys
+KEY_DEPLOYMENT_MODE = f"{DEPLOYMENT}>{MODE}"
+SERVER_NODE_INFO = f"{SERVER_NODE}>machine_id"
+KEY_SERVER_NODE_INFO = "server_node_info_key"
+KEY_SERVER_NODE_TYPE = "server_node_type_key"
+KEY_ENCLOSURE_ID = "enclosure_id_key"
+KEY_CLUSTER_ID = "cluster_id_key"
+KEY_CSM_USER = "csm_user_key"
+KEY_CSM_SECRET = "csm_secret_key"
+KEY_S3_LDAP_USER = "openldap_s3_user_key"
+KEY_S3_LDAP_SECRET = "openldap_s3_secret_key"
+KEY_ROAMING_IP = "roaming_ip_key"
+KEY_HOSTNAME = "node_hostname_key"
+KEY_DATA_NW_PUBLIC_FQDN = "data_nw_public_fqdn"
+KEY_DATA_NW_PRIVATE_FQDN = "data_nw_private_fqdn"
+
+#CSM TEST Consts
+DEFAULT_BROWSER = 'chrome'
+DEFAULT_TEST_PLAN = CSM_PATH + '/test/plans/service_sanity.pln'
+DEFAULT_ARG_PATH = CSM_PATH + '/test/test_data/args.yaml'
+DEFAULT_LOGFILE = '/tmp/csm_gui_test.log'
+DEFAULT_OUTPUTFILE = '/tmp/output.log'
